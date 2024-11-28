@@ -1,7 +1,7 @@
+use async_channel::{Receiver, Sender};
+use std::io;
 use std::io::Write;
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
-use std::thread::JoinHandle;
-use std::{io, thread};
+use tokio::task::JoinHandle;
 
 use common::{BinarySerializable, CountingWriter, TerminatingWrite};
 
@@ -9,7 +9,7 @@ use crate::directory::WritePtr;
 use crate::store::footer::DocStoreFooter;
 use crate::store::index::{Checkpoint, SkipIndexBuilder};
 use crate::store::{Compressor, Decompressor, StoreReader};
-use crate::DocId;
+use crate::{pool, DocId};
 
 pub struct BlockCompressor(BlockCompressorVariants);
 
@@ -162,35 +162,33 @@ enum BlockCompressorMessage {
 
 struct DedicatedThreadBlockCompressorImpl {
     join_handle: Option<JoinHandle<io::Result<()>>>,
-    tx: SyncSender<BlockCompressorMessage>,
+    tx: Sender<BlockCompressorMessage>,
 }
 
 impl DedicatedThreadBlockCompressorImpl {
     fn new(mut block_compressor: BlockCompressorImpl) -> io::Result<Self> {
         let (tx, rx): (
-            SyncSender<BlockCompressorMessage>,
+            Sender<BlockCompressorMessage>,
             Receiver<BlockCompressorMessage>,
-        ) = sync_channel(3);
-        let join_handle = thread::Builder::new()
-            .name("docstore-compressor-thread".to_string())
-            .spawn(move || {
-                while let Ok(packet) = rx.recv() {
-                    match packet {
-                        BlockCompressorMessage::CompressBlockAndWrite {
-                            block_data,
-                            num_docs_in_block,
-                        } => {
-                            block_compressor
-                                .compress_block_and_write(&block_data[..], num_docs_in_block)?;
-                        }
-                        BlockCompressorMessage::Stack(store_reader) => {
-                            block_compressor.stack(store_reader)?;
-                        }
+        ) = async_channel::bounded(3);
+        let join_handle = pool::TOKIO_DOCSTORE_RUNTIME.spawn(async move {
+            while let Ok(packet) = rx.recv().await {
+                match packet {
+                    BlockCompressorMessage::CompressBlockAndWrite {
+                        block_data,
+                        num_docs_in_block,
+                    } => {
+                        block_compressor
+                            .compress_block_and_write(&block_data[..], num_docs_in_block)?;
+                    }
+                    BlockCompressorMessage::Stack(store_reader) => {
+                        block_compressor.stack(store_reader)?;
                     }
                 }
-                block_compressor.close()?;
-                Ok(())
-            })?;
+            }
+            block_compressor.close()?;
+            Ok(())
+        });
         Ok(DedicatedThreadBlockCompressorImpl {
             join_handle: Some(join_handle),
             tx,
@@ -209,9 +207,14 @@ impl DedicatedThreadBlockCompressorImpl {
     }
 
     fn send(&mut self, msg: BlockCompressorMessage) -> io::Result<()> {
-        if self.tx.send(msg).is_err() {
+        if let Err(err) = pool::TOKIO_DOCSTORE_RUNTIME.block_on(async {
+            if self.tx.send(msg).await.is_err() {
+                return Err(io::Error::new(io::ErrorKind::Other, "Unidentified error."));
+            }
+            Ok(())
+        }) {
             harvest_thread_result(self.join_handle.take())?;
-            return Err(io::Error::new(io::ErrorKind::Other, "Unidentified error."));
+            return Err(err);
         }
         Ok(())
     }
@@ -227,11 +230,17 @@ impl DedicatedThreadBlockCompressorImpl {
 /// If the thread panicked, or if the result has already been harvested,
 /// returns an explicit error.
 fn harvest_thread_result(join_handle_opt: Option<JoinHandle<io::Result<()>>>) -> io::Result<()> {
-    let join_handle = join_handle_opt
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Thread already joined."))?;
-    join_handle
-        .join()
-        .map_err(|_err| io::Error::new(io::ErrorKind::Other, "Compressing thread panicked."))?
+    if let Some(handle) = join_handle_opt {
+        return pool::TOKIO_DOCSTORE_RUNTIME
+            .block_on(handle)
+            .map_err(|_err| {
+                io::Error::new(io::ErrorKind::Other, "Compressing thread panicked.")
+            })?;
+    }
+    Err(io::Error::new(
+        io::ErrorKind::Other,
+        "Thread already joined.",
+    ))
 }
 
 #[cfg(test)]

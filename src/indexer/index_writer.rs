@@ -1,13 +1,10 @@
 use std::ops::Range;
 use std::sync::Arc;
-use std::thread;
-use std::thread::JoinHandle;
 
 use common::BitSet;
 use smallvec::{smallvec, SmallVec};
 
 use super::operation::{AddOperation, UserOperation};
-use super::pool::TOKIO_RUNTIME;
 use super::segment_updater::SegmentUpdater;
 use super::{AddBatch, AddBatchReceiver, AddBatchSender, PreparedCommit};
 use crate::core::{Index, Segment, SegmentComponent, SegmentId, SegmentMeta, SegmentReader};
@@ -20,6 +17,7 @@ use crate::indexer::index_writer_status::IndexWriterStatus;
 use crate::indexer::operation::DeleteOperation;
 use crate::indexer::stamper::Stamper;
 use crate::indexer::{MergePolicy, SegmentEntry, SegmentWriter};
+use crate::pool::TOKIO_INDEXER_RUNTIME;
 use crate::query::{EnableScoring, Query, TermQuery};
 use crate::schema::{Document, IndexRecordOption, Term};
 use crate::{FutureResult, Opstamp};
@@ -345,7 +343,7 @@ impl IndexWriter {
 
         let former_workers_handles = std::mem::take(&mut self.workers_join_handle);
         for join_handle in former_workers_handles {
-            TOKIO_RUNTIME
+            TOKIO_INDEXER_RUNTIME
                 .block_on(join_handle)
                 .map_err(|_| error_in_index_worker_thread("Worker thread panicked."))?
                 .map_err(|_| error_in_index_worker_thread("Worker thread failed."))?;
@@ -409,7 +407,7 @@ impl IndexWriter {
         let mem_budget = self.memory_budget_in_bytes_per_thread;
         let index = self.index.clone();
 
-        let join_handle = TOKIO_RUNTIME.spawn(async move {
+        let join_handle = TOKIO_INDEXER_RUNTIME.spawn(async move {
             loop {
                 let first_batch;
                 loop {
@@ -583,7 +581,7 @@ impl IndexWriter {
         //
         // This will reach an end as the only document_sender
         // was dropped with the index_writer.
-        TOKIO_RUNTIME.block_on(async move {
+        TOKIO_INDEXER_RUNTIME.block_on(async move {
             if let Ok(document_receiver) = document_receiver_res {
                 while document_receiver.recv().await.is_ok() {}
             }
@@ -633,7 +631,7 @@ impl IndexWriter {
         let former_workers_join_handle = std::mem::take(&mut self.workers_join_handle);
 
         for worker_handle in former_workers_join_handle {
-            let indexing_worker_result = TOKIO_RUNTIME
+            let indexing_worker_result = TOKIO_INDEXER_RUNTIME
                 .block_on(worker_handle)
                 .map_err(|e| TantivyError::ErrorInThread(format!("{e:?}")))?;
             indexing_worker_result?;
@@ -797,7 +795,7 @@ impl IndexWriter {
         if self.index_writer_status.is_alive() {
             let sender: Arc<async_channel::Sender<SmallVec<[AddOperation; 4]>>> =
                 Arc::clone(&self.operation_sender);
-            if TOKIO_RUNTIME.block_on(async move { sender.send(add_ops).await.is_ok() }) {
+            if TOKIO_INDEXER_RUNTIME.block_on(async move { sender.send(add_ops).await.is_ok() }) {
                 return Ok(());
             }
         }
@@ -810,7 +808,7 @@ impl Drop for IndexWriter {
         self.segment_updater.kill();
         self.drop_sender();
         for work in self.workers_join_handle.drain(..) {
-            let _ = TOKIO_RUNTIME.block_on(work);
+            let _ = TOKIO_INDEXER_RUNTIME.block_on(work);
         }
     }
 }

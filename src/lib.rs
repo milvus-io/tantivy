@@ -138,6 +138,7 @@ pub type Result<T> = std::result::Result<T, TantivyError>;
 
 mod core;
 mod indexer;
+mod pool;
 
 #[allow(unused_doc_comments)]
 pub mod error;

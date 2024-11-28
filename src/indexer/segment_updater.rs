@@ -6,9 +6,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
-use rayon::{ThreadPool, ThreadPoolBuilder};
+use rayon::ThreadPool;
 
-use super::pool;
 use super::segment_manager::SegmentManager;
 use crate::core::{
     Index, IndexMeta, IndexSettings, Segment, SegmentId, SegmentMeta, META_FILEPATH,
@@ -25,9 +24,8 @@ use crate::indexer::{
     DefaultMergePolicy, MergeCandidate, MergeOperation, MergePolicy, SegmentEntry,
     SegmentSerializer,
 };
+use crate::pool;
 use crate::{FutureResult, Opstamp};
-
-const NUM_MERGE_THREADS: usize = 4;
 
 /// Save the index meta file.
 /// This operation is atomic:
