@@ -1,12 +1,16 @@
+use std::path::PathBuf;
+
+use tempfile::TempDir;
+
 use crate::collector::Count;
-use crate::directory::{RamDirectory, WatchCallback};
-use crate::indexer::NoMergePolicy;
+use crate::directory::{RamDirectory, RoRamDirectory, WatchCallback};
+use crate::indexer::{LogMergePolicy, NoMergePolicy};
+use crate::postings::Postings;
 use crate::query::TermQuery;
 use crate::schema::{Field, IndexRecordOption, Schema, INDEXED, STRING, TEXT};
 use crate::tokenizer::TokenizerManager;
 use crate::{
-    Directory, Document, Index, IndexBuilder, IndexReader, IndexSettings, ReloadPolicy, SegmentId,
-    Term,
+    Directory, Document, Index, IndexBuilder, IndexReader, IndexSettings, IndexWriter, ReloadPolicy, SegmentId, Term
 };
 
 #[test]
@@ -343,4 +347,36 @@ fn test_merging_segment_update_docfreq() {
     let term = Term::from_field_text(text_field, "hello");
     let term_info = inv_index.get_term_info(&term).unwrap().unwrap();
     assert_eq!(term_info.doc_freq, 12);
+}
+
+#[test]
+fn test_read_only_dir() -> crate::Result<()> {
+    let schema = throw_away_schema();
+    let field = schema.get_field("num_likes").unwrap();
+    let tempdir = TempDir::new().unwrap();
+    let tempdir_path = PathBuf::from(tempdir.path());
+
+    let mut write_index = Index::create_in_dir(&tempdir_path, schema.clone())?;
+
+    // let mut index = Index::create_from_tempdir(schema)?;
+    let mut writer: IndexWriter = write_index.writer_for_tests()?;
+    writer.commit()?;
+    let dir = RoRamDirectory::new(&tempdir_path).unwrap();
+    let mut index = Index::open_or_create(dir, schema.clone())?;
+    let reader = index
+        .reader_builder()
+        .reload_policy(ReloadPolicy::Manual)
+        .try_into()?;
+    assert_eq!(reader.searcher().num_docs(), 0);
+    writer.add_document(doc!(field=>1u64))?;
+    let (sender, receiver) = crossbeam_channel::unbounded();
+    let _handle = index.directory_mut().watch(WatchCallback::new(move || {
+        let _ = sender.send(());
+    }));
+    writer.commit()?;
+    assert!(receiver.recv().is_ok());
+    assert_eq!(reader.searcher().num_docs(), 0);
+    reader.reload()?;
+    assert_eq!(reader.searcher().num_docs(), 1);
+    Ok(())
 }

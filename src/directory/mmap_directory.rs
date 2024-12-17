@@ -297,9 +297,9 @@ impl MmapDirectory {
 /// uses BSD locks (`flock`). The lock is actually released when
 /// the `File` object is dropped and its associated file descriptor
 /// is closed.
-struct ReleaseLockFile {
-    _file: File,
-    path: PathBuf,
+pub(crate) struct ReleaseLockFile {
+    pub(crate) _file: File,
+    pub(crate) path: PathBuf,
 }
 
 impl Drop for ReleaseLockFile {
