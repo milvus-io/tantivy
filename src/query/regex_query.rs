@@ -6,6 +6,7 @@ use tantivy_fst::Regex;
 use crate::error::TantivyError;
 use crate::query::{AutomatonWeight, EnableScoring, Query, Weight};
 use crate::schema::Field;
+use crate::Term;
 
 /// A Regex Query matches all of the documents
 /// containing a specific term that matches
@@ -57,6 +58,7 @@ use crate::schema::Field;
 pub struct RegexQuery {
     regex: Arc<Regex>,
     field: Field,
+    json_path: Option<String>,
 }
 
 impl RegexQuery {
@@ -72,11 +74,40 @@ impl RegexQuery {
         RegexQuery {
             regex: regex.into(),
             field,
+            json_path: None,
         }
     }
 
+    /// Creates a new RegexQuery from a given pattern with a json path
+    pub fn from_pattern_with_json_path(
+        regex_pattern: &str,
+        field: Field,
+        json_path: &str,
+    ) -> crate::Result<Self> {
+        let mut term = Term::from_field_json_path(field, json_path, false);
+        term.append_type_and_str(regex_pattern);
+        let regex_text = std::str::from_utf8(term.serialized_value_bytes()).map_err(|err| {
+            TantivyError::InvalidArgument(format!(
+                "Failed to convert json term value bytes to utf8 string: {err}"
+            ))
+        })?;
+        let regex = Regex::new(regex_text).unwrap();
+        Ok(RegexQuery {
+            regex: regex.into(),
+            field,
+            json_path: Some(json_path.to_string()),
+        })
+    }
+
     fn specialized_weight(&self) -> AutomatonWeight<Regex> {
-        AutomatonWeight::new(self.field, self.regex.clone())
+        match &self.json_path {
+            Some(json_path) => AutomatonWeight::new_for_json_path(
+                self.field,
+                self.regex.clone(),
+                json_path.as_bytes(),
+            ),
+            None => AutomatonWeight::new(self.field, self.regex.clone()),
+        }
     }
 }
 
@@ -94,8 +125,8 @@ mod test {
 
     use super::RegexQuery;
     use crate::collector::TopDocs;
-    use crate::schema::{Field, Schema, TEXT};
-    use crate::{assert_nearly_equals, Index, IndexReader, IndexWriter};
+    use crate::schema::{Field, Schema, STORED, TEXT};
+    use crate::{assert_nearly_equals, Index, IndexReader, IndexWriter, TantivyDocument};
 
     fn build_test_index() -> crate::Result<(IndexReader, Field)> {
         let mut schema_builder = Schema::builder();
@@ -187,5 +218,47 @@ mod test {
             }
             res => panic!("unexpected result: {res:?}"),
         }
+    }
+
+    #[test]
+    pub fn test_regex_query_with_json_path() -> crate::Result<()> {
+        std::env::set_var("RUST_BACKTRACE", "1");
+        let mut schema_builder = Schema::builder();
+        let attributes_field = schema_builder.add_json_field("attributes", TEXT | STORED);
+        let schema = schema_builder.build();
+        let index = Index::create_in_ram(schema.clone());
+        {
+            let mut index_writer: IndexWriter = index.writer_for_tests().unwrap();
+
+            let doc = TantivyDocument::parse_json(
+                &schema,
+                r#"{
+                "attributes": {
+                    "country": "japan"
+                }
+            }"#,
+            )?;
+
+            index_writer.add_document(doc)?;
+            let doc = TantivyDocument::parse_json(
+                &schema,
+                r#"{
+                "attributes": {
+                    "country": "korea"
+                }
+            }"#,
+            )?;
+
+            index_writer.add_document(doc)?;
+            index_writer.commit()?;
+        }
+        let reader = index.reader()?;
+
+        let matching_one =
+            RegexQuery::from_pattern_with_json_path("jap[ao]n", attributes_field, "country")?;
+        let matching_zero =
+            RegexQuery::from_pattern_with_json_path("jap[A-Z]n", attributes_field, "country")?;
+        verify_regex_query(matching_one, matching_zero, reader);
+        Ok(())
     }
 }
