@@ -84,6 +84,7 @@ impl RegexQuery {
         field: Field,
         json_path: &str,
     ) -> crate::Result<Self> {
+        // tantivy-fst does not support ^ and $ in regex pattern so it is valid to append regex pattern to the end of the json path
         let mut term = Term::from_field_json_path(field, json_path, false);
         term.append_type_and_str(regex_pattern);
         let regex_text = std::str::from_utf8(term.serialized_value_bytes()).map_err(|err| {
