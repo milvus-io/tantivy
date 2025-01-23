@@ -58,7 +58,7 @@ use crate::Term;
 pub struct RegexQuery {
     regex: Arc<Regex>,
     field: Field,
-    json_path: Option<String>,
+    json_path_bytes: Option<Vec<u8>>,
 }
 
 impl RegexQuery {
@@ -74,7 +74,7 @@ impl RegexQuery {
         RegexQuery {
             regex: regex.into(),
             field,
-            json_path: None,
+            json_path_bytes: None,
         }
     }
 
@@ -93,19 +93,26 @@ impl RegexQuery {
             ))
         })?;
         let regex = Regex::new(regex_text).unwrap();
-        Ok(RegexQuery {
-            regex: regex.into(),
-            field,
-            json_path: Some(json_path.to_string()),
-        })
+
+        if let Some((json_path_bytes, _)) = term.value().as_json() {
+            Ok(RegexQuery {
+                regex: regex.into(),
+                field,
+                json_path_bytes: Some(json_path_bytes.to_vec()),
+            })
+        } else {
+            Err(TantivyError::InvalidArgument(format!(
+                "The regex query requires a json path for a json term."
+            )))
+        }
     }
 
     fn specialized_weight(&self) -> AutomatonWeight<Regex> {
-        match &self.json_path {
-            Some(json_path) => AutomatonWeight::new_for_json_path(
+        match &self.json_path_bytes {
+            Some(json_path_bytes) => AutomatonWeight::new_for_json_path(
                 self.field,
                 self.regex.clone(),
-                json_path.as_bytes(),
+                json_path_bytes.as_slice(),
             ),
             None => AutomatonWeight::new(self.field, self.regex.clone()),
         }
@@ -235,7 +242,7 @@ mod test {
                 &schema,
                 r#"{
                 "attributes": {
-                    "country": "japan"
+                    "country": {"name": "japan"}
                 }
             }"#,
             )?;
@@ -245,7 +252,7 @@ mod test {
                 &schema,
                 r#"{
                 "attributes": {
-                    "country": "korea"
+                    "country": {"name": "korea"}
                 }
             }"#,
             )?;
@@ -256,7 +263,7 @@ mod test {
         let reader = index.reader()?;
 
         let matching_one =
-            RegexQuery::from_pattern_with_json_path("jap[ao]n", attributes_field, "country")?;
+            RegexQuery::from_pattern_with_json_path("j.*", attributes_field, "country.name")?;
         let matching_zero =
             RegexQuery::from_pattern_with_json_path("jap[A-Z]n", attributes_field, "country")?;
         verify_regex_query(matching_one, matching_zero, reader);
