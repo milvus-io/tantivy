@@ -1,7 +1,8 @@
-use lazy_static::lazy_static;
-use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::str::FromStr;
 use std::{env, thread};
+
+use lazy_static::lazy_static;
+use rayon::{ThreadPool, ThreadPoolBuilder};
 
 const MILVUS_TOKIO_MERGER_THREAD_NUM: &str = "MILVUS_TANTIVY_MERGER_THREAD_NUM";
 const MILVUS_TANTIVY_WRITER_THREAD_NUM: &str = "MILVUS_TANTIVY_WRITER_THREAD_NUM";
@@ -59,8 +60,8 @@ mod tests {
     use std::env;
 
     use super::{
-        default_num_thread, get_num_thread, MILVUS_TOKIO_MERGER_THREAD_NUM,
-        MILVUS_TANTIVY_WRITER_THREAD_NUM,
+        default_num_thread, get_num_thread, MILVUS_TANTIVY_WRITER_THREAD_NUM,
+        MILVUS_TOKIO_MERGER_THREAD_NUM,
     };
 
     #[test]

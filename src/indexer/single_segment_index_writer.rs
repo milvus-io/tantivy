@@ -3,14 +3,13 @@ use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 
+use super::index_writer::error_in_index_worker_thread;
+use super::pool::TOKIO_RUNTIME;
 use crate::indexer::operation::AddOperation;
 use crate::indexer::segment_updater::save_metas;
 use crate::indexer::SegmentWriter;
 use crate::schema::document::Document;
 use crate::{Directory, Index, IndexMeta, Segment, TantivyDocument};
-
-use super::index_writer::error_in_index_worker_thread;
-use super::pool::TOKIO_RUNTIME;
 
 #[doc(hidden)]
 pub struct SingleSegmentIndexWriter<D: Document = TantivyDocument> {
